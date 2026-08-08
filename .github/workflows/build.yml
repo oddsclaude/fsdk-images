@@ -96,7 +96,7 @@ jobs:
             [ $imgs[] as $img
               | (.archs[$img] // ["x86_64", "aarch64"])[] as $arch
               | { image: $img, arch: $arch,
-                  runner: (if $arch == "x86_64" then "ubuntu-24.04" else "ubuntu-24.04-arm" end) } ]'
+                  runner: (if $arch == "x86_64" then "ubuntu-24.04" else "ubuntu-24.04-arm" end) } ]' \
             elements/targets.json)"
           {
             echo "oci_images=${OCI}"
@@ -199,6 +199,6 @@ jobs:
       id-token: write
     with:
       image: ${{ matrix.image }}
-      archs: ${{ matrix.archs }}
+      archs: ${{ toJSON(matrix.archs) }}
       ref: ${{ github.event.client_payload.ref || github.ref }}
     secrets: inherit
