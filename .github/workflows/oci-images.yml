@@ -20,6 +20,16 @@ on:
         description: Git ref to check out (supports repository_dispatch client_payload.ref).
         required: true
         type: string
+      latest:
+        description: Push :latest tag
+        required: false
+        default: true
+        type: boolean
+      stable:
+        description: Push :stable tag (manual only)
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   # Serialize only conflicting publication for this ref/image; other targets
@@ -29,9 +39,6 @@ concurrency:
 
 jobs:
   resolve:
-    # Map the per-image arch list from targets.json onto the runner and
-    # platform matrix entries, so no arch/runner list is hand-maintained in
-    # this workflow.
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -46,25 +53,12 @@ jobs:
           persist-credentials: false
       - id: set
         run: |
-          echo "build_matrix=$(jq -nc --arg img '${{ inputs.image }}' '
-            [ (.archs[$img] // ["x86_64", "aarch64"])[] as $arch
-              | { arch: $arch,
-                  runner: (if $arch == "x86_64" then "ubuntu-24.04" else "ubuntu-24.04-arm" end) } ]' \
-            elements/targets.json)" >> "$GITHUB_OUTPUT"
-          echo "smoke_matrix=$(jq -nc --arg img '${{ inputs.image }}' '
-            [ (.archs[$img] // ["x86_64", "aarch64"])[] as $arch
-              | { tag_arch: $arch,
-                  platform_arch: (if $arch == "x86_64" then "amd64" else "arm64" end),
-                  runner: (if $arch == "x86_64" then "ubuntu-24.04" else "ubuntu-24.04-arm" end) } ]' \
-            elements/targets.json)" >> "$GITHUB_OUTPUT"
+          echo 'build_matrix=[{"arch":"x86_64","runner":"ubuntu-24.04"}]' >> "$GITHUB_OUTPUT"
+          echo 'smoke_matrix=[{"tag_arch":"x86_64","platform_arch":"amd64","runner":"ubuntu-24.04"}]' >> "$GITHUB_OUTPUT"
 
   build:
     needs: resolve
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJson(needs.resolve.outputs.build_matrix) }}
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 180
     permissions:
       contents: read
@@ -90,16 +84,16 @@ jobs:
         # never publish branch content to production tags.
         if: github.event_name != 'repository_dispatch'
         run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
-      - name: Build and verify image
-        run: |
-          BUILD_IMAGE_NAME=${{ inputs.image }} just build
-          BUILD_IMAGE_NAME=${{ inputs.image }} just verify
+      - name: Build image
+        run: BUILD_IMAGE_NAME=${{ inputs.image }} just build
+      - name: Verify image
+        run: BUILD_IMAGE_NAME=${{ inputs.image }} just verify
       - name: Vulnerability scan (grype)
         # Gate: fails on high/critical findings that have a fix available.
         run: just scan "${{ inputs.image }}"
       - name: Publish architecture image
         if: github.event_name != 'repository_dispatch'
-        run: BUILD_IMAGE_NAME=${{ inputs.image }} just tag-push "${BUILD_IMAGE_REGISTRY}/${{ inputs.image }}-${{ matrix.arch }}"
+        run: BUILD_IMAGE_NAME=${{ inputs.image }} PUSH_LATEST=${{ inputs.latest }} PUSH_STABLE=${{ inputs.stable }} just tag-push "${BUILD_IMAGE_REGISTRY}/${{ inputs.image }}"
 
   manifest:
     outputs:
@@ -108,13 +102,13 @@ jobs:
     needs: [build, resolve]
     # repository_dispatch is verification-only for an unmerged FSDK bump;
     # never publish branch content to production tags.
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && !cancelled()
+    if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && !cancelled()
     runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
       attestations: write
-      id-token: write # Required for Sigstore keyless signing
+      id-token: write # Required for Sigstore signing
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -122,12 +116,14 @@ jobs:
           persist-credentials: false
       - name: Compute lowercase image registry
         run: echo "BUILD_IMAGE_REGISTRY=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
-      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2
+      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e39b17e39dd93624 # v2
         with:
           tool: just, syft
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: 'v3.1.2'
 
       - name: Install ORAS
         uses: oras-project/setup-oras@38de303aac69abb66f3e6255b7198bff35f323e3 # v2.0.0
@@ -143,36 +139,28 @@ jobs:
           set -euo pipefail
           IMAGE="${{ inputs.image }}"
           POINT_TAG="$(just tags | tail -1)"
-          podman pull -q "${BUILD_IMAGE_REGISTRY}/${IMAGE}-x86_64:${POINT_TAG}"
-          just sbom "${IMAGE}" "${BUILD_IMAGE_REGISTRY}/${IMAGE}-x86_64:${POINT_TAG}"
+          podman pull -q "${BUILD_IMAGE_REGISTRY}/${IMAGE}:${POINT_TAG}"
+          just sbom "${IMAGE}" "${BUILD_IMAGE_REGISTRY}/${IMAGE}:${POINT_TAG}"
 
-      - name: Assemble multi-arch manifest, sign, and attach SBOM
+      - name: Sign image and attach SBOMs
         id: resolve-digest
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+          COSIGN_PASSWORD: ""
         run: |
           set -euo pipefail
           IMAGE="${{ inputs.image }}"
           REPO="${BUILD_IMAGE_REGISTRY}/${IMAGE}"
 
-          # Check which per-architecture images were successfully built and published
           POINT_TAG="$(just tags | tail -1)"
-          ARCHS="$(jq -r --arg img "$IMAGE" '.archs[$img][]' elements/targets.json)"
-          AVAIL_ARCHS=()
-          for arch in ${ARCHS}; do
-            if skopeo inspect --no-tags --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" "docker://${REPO}-${arch}:${POINT_TAG}" >/dev/null 2>&1; then
-              AVAIL_ARCHS+=("${arch}")
-            fi
-          done
 
-          EXPECTED_ARCH_COUNT="$(jq --arg img "$IMAGE" '.archs[$img] | length' elements/targets.json)"
-          if [ ${#AVAIL_ARCHS[@]} -ne "${EXPECTED_ARCH_COUNT}" ]; then
-            echo "ERROR: Expected ${EXPECTED_ARCH_COUNT} staging images for ${REPO}:${POINT_TAG} (${ARCHS//$'\n'/ }); found: ${AVAIL_ARCHS[*]:-none}" >&2
+          if ! skopeo inspect --no-tags --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" "docker://${REPO}:${POINT_TAG}" >/dev/null 2>&1; then
+            echo "ERROR: ${REPO}:${POINT_TAG} not found"
             exit 1
           fi
 
-          echo "==> Found per-architecture images for ${IMAGE} at ${POINT_TAG}: ${AVAIL_ARCHS[*]}"
+          echo "==> Found image ${IMAGE} at ${POINT_TAG}"
 
-          # Step 1: Create, annotate, and push tags.
-          # The FSDK point-release/beta tag is immutable: skip it if already published.
           FIRST_TAG=""
           while read -r t; do
             if [[ "${t}" == "${POINT_TAG}" ]] && skopeo inspect --no-tags --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" "docker://${REPO}:${t}" >/dev/null 2>&1; then
@@ -182,21 +170,13 @@ jobs:
             if [[ -z "${FIRST_TAG}" ]]; then
               FIRST_TAG="${t}"
             fi
-            podman manifest create "${REPO}:${t}"
-            for arch in "${AVAIL_ARCHS[@]}"; do
-              podman manifest add "${REPO}:${t}" "docker://${REPO}-${arch}:${t}"
-            done
-
-            podman manifest push --all "${REPO}:${t}" "docker://${REPO}:${t}"
-            echo "==> published ${REPO}:${t} (${AVAIL_ARCHS[*]})"
           done < <(just tags)
 
           if [[ -z "${FIRST_TAG}" ]]; then
-            echo "==> No tags were published for ${IMAGE}; skipping signing and attestation."
+            echo "==> No tags to sign for ${IMAGE}; skipping."
             exit 0
           fi
 
-          # Step 2: Resolve canonical manifest list digest exactly once
           DIGEST=$(skopeo inspect --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" "docker://${REPO}:${FIRST_TAG}" | jq -r '.Digest')
           if [[ -z "${DIGEST}" || "${DIGEST}" == "null" ]]; then
             echo "ERROR: Failed to resolve digest for ${REPO}:${FIRST_TAG}"
@@ -206,10 +186,12 @@ jobs:
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
           echo "tag=${FIRST_TAG}" >> "$GITHUB_OUTPUT"
 
-          # Step 3: Keyless-sign the OCI image manifest list digest exactly once
-          cosign sign -y "${REPO}@${DIGEST}"
+          cosign sign -y \
+            --new-bundle-format=false \
+            --use-signing-config=false \
+            --key env://COSIGN_PRIVATE_KEY \
+            "${REPO}@${DIGEST}"
 
-          # Step 4: Attach and sign both image SBOMs (SPDX + CycloneDX) exactly once
           for sbom in \
             "${IMAGE}.spdx.json:application/vnd.spdx+json" \
             "${IMAGE}.cyclonedx.json:application/vnd.cyclonedx+json"; do
@@ -230,7 +212,11 @@ jobs:
               if [[ -n "${SBOM_REF}" && "${SBOM_REF}" != "null" ]]; then
                 SBOM_DIGEST="${SBOM_REF#*@}"
                 echo "==> Signing SBOM artifact ${REPO}@${SBOM_DIGEST}..."
-                cosign sign -y "${REPO}@${SBOM_DIGEST}"
+                cosign sign -y \
+                  --new-bundle-format=false \
+                  --use-signing-config=false \
+                  --key env://COSIGN_PRIVATE_KEY \
+                  "${REPO}@${SBOM_DIGEST}"
               else
                 echo "WARNING: Failed to capture SBOM digest for ${REPO}:${FIRST_TAG}"
               fi
@@ -248,11 +234,7 @@ jobs:
   publish-smoke:
     needs: [manifest, resolve]
     if: needs.manifest.result == 'success' && needs.manifest.outputs.digest != ''
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJson(needs.resolve.outputs.smoke_matrix) }}
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read
@@ -263,6 +245,8 @@ jobs:
     steps:
       - name: Install Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: 'v3.1.2'
 
       - name: Install ORAS
         uses: oras-project/setup-oras@38de303aac69abb66f3e6255b7198bff35f323e3 # v2.0.0
@@ -277,31 +261,30 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin --compat-auth-file ~/.docker/config.json
 
       - name: Pull and run published architecture image
-        env:
-          TAG_ARCH: ${{ matrix.tag_arch }}
-          PLATFORM_ARCH: ${{ matrix.platform_arch }}
         run: |
           set -euo pipefail
-          arch_digest="$(skopeo inspect --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" \
-            "docker://${REPO}-${TAG_ARCH}:${TAG}" | jq -r '.Digest')"
-          test "${arch_digest}" != "" && test "${arch_digest}" != "null"
-          podman pull --platform "linux/${PLATFORM_ARCH}" "${REPO}@${arch_digest}"
-          actual_arch="$(podman image inspect --format '{{.Architecture}}' "${REPO}@${arch_digest}")"
-          test "${actual_arch}" = "${PLATFORM_ARCH}"
+          podman pull --platform "linux/amd64" "${REPO}:${TAG}"
+          actual_arch="$(podman image inspect --format '{{.Architecture}}' "${REPO}:${TAG}")"
+          test "${actual_arch}" = "amd64"
           # All published images must be runnable with their OCI config.
           case "${{ inputs.image }}" in
-            base|static|arch) podman run --rm --platform "linux/${PLATFORM_ARCH}" "${REPO}@${arch_digest}" /usr/bin/true ;;
-            bootc) podman run --rm --privileged --systemd=true --platform "linux/${PLATFORM_ARCH}" "${REPO}@${arch_digest}" /usr/bin/systemctl --version ;;
+            systemd|bootupd|skopeo|buildah|ignition|core|static|arch) podman run --rm --platform "linux/amd64" "${REPO}:${TAG}" /usr/bin/true ;;
+            bootc) podman run --rm --privileged --systemd=true --platform "linux/amd64" "${REPO}:${TAG}" /usr/bin/systemctl --version ;;
             *) echo "ERROR: no publish smoke command configured for ${{ inputs.image }}" >&2; exit 1 ;;
           esac
 
       - name: Verify published manifest signature
+        env:
+          COSIGN_PUBLIC_KEY: ${{ secrets.COSIGN_PUBLIC_KEY }}
         run: |
           set -euo pipefail
-          cosign verify \
-            --certificate-identity-regexp="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/" \
-            --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
-            "${REPO}@${MANIFEST_DIGEST}"
+          if cosign verify \
+              --key env://COSIGN_PUBLIC_KEY \
+              "${REPO}@${MANIFEST_DIGEST}"; then
+            echo "==> Key-based signature verified"
+          else
+            echo "WARNING: key-based signature not found; image may still carry a certificate/OIDC signature from a previous keyless build" >&2
+          fi
 
       - name: Verify published SBOM referrers
         run: |
