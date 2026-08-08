@@ -23,9 +23,6 @@ concurrency:
   group: oci-image-${{ inputs.ref }}-${{ inputs.image }}
   cancel-in-progress: true
 
-env:
-  BUILD_IMAGE_REGISTRY: ghcr.io/${{ github.repository_owner }}
-
 jobs:
   build:
     strategy:
@@ -47,6 +44,8 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
+      - name: Compute lowercase image registry
+        run: echo "BUILD_IMAGE_REGISTRY=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
       - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2
         with:
           tool: just
@@ -91,6 +90,8 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
+      - name: Compute lowercase image registry
+        run: echo "BUILD_IMAGE_REGISTRY=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
       - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2
         with:
           tool: just, syft
@@ -231,7 +232,6 @@ jobs:
       contents: read
       packages: read
     env:
-      REPO: ghcr.io/${{ github.repository_owner }}/${{ inputs.image }}
       TAG: ${{ needs.manifest.outputs.tag }}
       MANIFEST_DIGEST: ${{ needs.manifest.outputs.digest }}
     steps:
@@ -240,6 +240,9 @@ jobs:
 
       - name: Install ORAS
         uses: oras-project/setup-oras@38de303aac69abb66f3e6255b7198bff35f323e3 # v2.0.0
+
+      - name: Compute lowercase image ref
+        run: echo "REPO=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${{ inputs.image }}" >> "$GITHUB_ENV"
 
       - name: Log in to ghcr
         run: |
