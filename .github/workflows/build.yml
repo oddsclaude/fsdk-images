@@ -22,6 +22,16 @@ on:
         required: false
         default: ""
         type: string
+      stable:
+        description: Push :stable tag (requires manual trigger)
+        required: false
+        default: false
+        type: boolean
+      latest:
+        description: Push :latest tag
+        required: false
+        default: true
+        type: boolean
 
 concurrency:
   # A targeted manual run must not cancel an unrelated image's targeted run.
@@ -96,7 +106,7 @@ jobs:
             [ $imgs[] as $img
               | (.archs[$img] // ["x86_64", "aarch64"])[] as $arch
               | { image: $img, arch: $arch,
-                  runner: (if $arch == "x86_64" then "ubuntu-24.04" else "ubuntu-24.04-arm" end) } ]'
+                  runner: (if $arch == "x86_64" then "ubuntu-24.04" else "ubuntu-24.04-arm" end) } ]' \
             elements/targets.json)"
           {
             echo "oci_images=${OCI}"
@@ -138,10 +148,10 @@ jobs:
         run: |
           echo "OCI_IMAGE_REVISION=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           echo "OCI_IMAGE_CREATED=$(git log -1 --format=%cI)" >> "$GITHUB_ENV"
-      - name: Build and verify ${{ matrix.image }} (${{ matrix.arch }})
-        run: |
-          BUILD_IMAGE_NAME=${{ matrix.image }} just build
-          BUILD_IMAGE_NAME=${{ matrix.image }} just verify
+      - name: Build ${{ matrix.image }} (${{ matrix.arch }})
+        run: BUILD_IMAGE_NAME=${{ matrix.image }} just build
+      - name: Verify ${{ matrix.image }} (${{ matrix.arch }})
+        run: BUILD_IMAGE_NAME=${{ matrix.image }} just verify
       - name: Vulnerability scan ${{ matrix.image }} (${{ matrix.arch }})
         # Gate: fails on high/critical findings that have a fix available.
         run: just scan "${{ matrix.image }}"
@@ -199,6 +209,8 @@ jobs:
       id-token: write
     with:
       image: ${{ matrix.image }}
-      archs: ${{ matrix.archs }}
+      archs: ${{ toJSON(matrix.archs) }}
       ref: ${{ github.event.client_payload.ref || github.ref }}
+      stable: ${{ github.event_name == 'workflow_dispatch' && fromJson(github.event.inputs.stable) || false }}
+      latest: ${{ github.event_name == 'workflow_dispatch' && fromJson(github.event.inputs.latest) || true }}
     secrets: inherit
