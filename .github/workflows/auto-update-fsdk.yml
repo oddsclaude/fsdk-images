@@ -1,0 +1,96 @@
+name: Auto-update FSDK
+
+# Tracks the pinned freedesktop-sdk junction ref (elements/freedesktop-sdk.bst)
+# to the newest 25.08.x point release, opens a bump PR, and triggers a
+# repository_dispatch build so the new ref is built and verified on the PR
+# branch even though a GITHUB_TOKEN push does not itself fire the build
+# workflow. See build.yml for the fsdk-updated event handling.
+
+on:
+  schedule:
+    - cron: '0 3 * * 1,3,0'  # Runs Mon, Wed, Sun at 03:00 UTC
+  workflow_dispatch:          # Allows manual trigger
+
+concurrency:
+  group: auto-update-fsdk
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  update-fsdk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2
+        with:
+          tool: just
+
+      - name: Track FSDK Point Release
+        run: |
+          just bst source track freedesktop-sdk.bst
+
+      - name: Check for updates
+        id: check_changes
+        run: |
+          if git diff --exit-code elements/freedesktop-sdk.bst; then
+            echo "changes=false" >> "$GITHUB_OUTPUT"
+            echo "No new freedesktop-sdk point releases found."
+          else
+            echo "changes=true" >> "$GITHUB_OUTPUT"
+            echo "Found new freedesktop-sdk point release!"
+          fi
+
+      - name: Validate Element Graph
+        if: steps.check_changes.outputs.changes == 'true'
+        run: |
+          just validate
+
+      - name: Create PR and Trigger Dispatch
+        if: steps.check_changes.outputs.changes == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          BRANCH="auto/update-fsdk"
+
+          # Configure Git
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Create and switch to the branch
+          git checkout -b "$BRANCH"
+          git add elements/freedesktop-sdk.bst
+          git commit -m "chore: bump freedesktop-sdk point release"
+
+          # Push with GITHUB_TOKEN. This does not trigger the build workflow,
+          # so a repository_dispatch is sent below to build+verify the new ref
+          # on this branch. Force push to overwrite any previous update branch.
+          git push --force \
+            "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git" \
+            "HEAD:refs/heads/${BRANCH}"
+
+          # Create pull request if it doesn't already exist
+          EXISTING_PR=$(gh pr list --head "$BRANCH" --json number --jq '.[0].number' 2>/dev/null || true)
+          if [[ -z "$EXISTING_PR" ]]; then
+            PR_URL=$(gh pr create \
+              --base main \
+              --head "$BRANCH" \
+              --title "chore(deps): bump freedesktop-sdk point release" \
+              --body "Automated freedesktop-sdk point-release bump. This PR has triggered a repository dispatch build workflow to verify the update.")
+            echo "==> Opened new PR: $PR_URL"
+          else
+            echo "==> PR already exists: #$EXISTING_PR"
+          fi
+
+          # Send a repository dispatch to trigger the multi-arch build workflow on the PR branch
+          echo "==> Sending repository dispatch to test the new FSDK point release..."
+          gh api "repos/${REPOSITORY}/dispatches" \
+            -f event_type="fsdk-updated" \
+            -F "client_payload[ref]=refs/heads/$BRANCH"

@@ -1,0 +1,124 @@
+name: Scan published images
+
+# Weekly grype scan of the published (immutable) point-release tags, filing a
+# tracking issue per image when high/critical findings appear. The CI gates
+# (build.yml pr-build-oci, oci-images.yml build job via `just scan`) already
+# fail on high/critical findings with a fix available during PRs and publish;
+# this workflow reports everything else without blocking anything.
+
+on:
+  schedule:
+    - cron: '30 3 * * 1'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      oci_images: ${{ steps.set.outputs.oci_images }}
+      point_tag: ${{ steps.set.outputs.point_tag }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2
+        with:
+          tool: just
+      - id: set
+        run: |
+          set -euo pipefail
+          echo "oci_images=$(just image-matrix)" >> "$GITHUB_OUTPUT"
+          echo "point_tag=$(just tags | tail -1)" >> "$GITHUB_OUTPUT"
+
+  scan:
+    needs: resolve
+    if: needs.resolve.outputs.oci_images != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJson(needs.resolve.outputs.oci_images) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+      issues: write
+    env:
+      IMAGE_REF: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2
+        with:
+          tool: just, grype
+
+      - name: Log in to ghcr
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Check published tag exists
+        id: exists
+        run: |
+          if skopeo inspect --no-tags "docker://${IMAGE_REF}:${{ needs.resolve.outputs.point_tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Scan published image (non-blocking)
+        if: steps.exists.outputs.exists == 'true'
+        env:
+          GRYPE_GATE: "false"
+        run: just scan "${{ matrix.image }}" "registry:${IMAGE_REF}:${{ needs.resolve.outputs.point_tag }}"
+
+      - name: File or update vulnerability tracking issue
+        if: steps.exists.outputs.exists == 'true'
+        env:
+          IMAGE: ${{ matrix.image }}
+          TAG: ${{ needs.resolve.outputs.point_tag }}
+        run: |
+          set -euo pipefail
+          REPORT="grype-${IMAGE}.json"
+          SEV_CNT=$(jq '[.matches[]
+            | select((.vulnerability.severity // "" | ascii_downcase) as $s
+              | ($s == "high" or $s == "critical"))] | length' "${REPORT}")
+
+          TITLE="Vulnerability scan: ${IMAGE_REF}:${TAG}"
+          OPEN_ID=$(gh issue list --state open --limit 100 --json number,title \
+            -q '.[] | select(.title | startswith("Vulnerability scan: '"${IMAGE_REF}"':")) | .number' | head -1)
+
+          if [ "${SEV_CNT}" -eq 0 ]; then
+            if [ -n "${OPEN_ID}" ]; then
+              gh issue close "${OPEN_ID}" \
+                --comment "No high/critical findings as of $(date -u +%Y-%m-%dT%H:%MZ)."
+              echo "Closed issue #${OPEN_ID} for ${IMAGE}:${TAG}"
+            else
+              echo "No high/critical findings for ${IMAGE}:${TAG}; nothing to file."
+            fi
+            exit 0
+          fi
+
+          {
+            echo "Weekly grype scan of \`${IMAGE_REF}:${TAG}\` found **${SEV_CNT}** high/critical finding(s)."
+            echo
+            echo "| Package | Vulnerability | Severity | Fix available |"
+            echo "|---|---|---|---|"
+            jq -r '.matches[]
+              | select((.vulnerability.severity // "" | ascii_downcase) as $s
+                | ($s == "high" or $s == "critical"))
+              | .vulnerability.fix.state as $fix
+              | ($fix // "unknown") as $fix_state
+              | "| \(.artifact.name)@\(.artifact.version) | \(.vulnerability.id) | \(.vulnerability.severity) | \($fix_state) |"' "${REPORT}"
+          } > summary.md
+
+          if [ -n "${OPEN_ID}" ]; then
+            gh issue comment "${OPEN_ID}" --body-file summary.md
+            echo "Updated issue #${OPEN_ID} for ${IMAGE}:${TAG}"
+          else
+            gh issue create --title "${TITLE}" --body-file summary.md
+          fi

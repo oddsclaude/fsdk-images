@@ -1,0 +1,39 @@
+name: Validate Renovate Config
+
+on:
+  pull_request:
+    paths:
+      - "renovate.json"
+      - "elements/**/*.bst"
+  push:
+    branches: [main]
+    paths:
+      - "renovate.json"
+      - "elements/**/*.bst"
+
+permissions: {}
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      # renovate-config-validator needs no token and catches schema/rule errors.
+      - name: Validate renovate.json schema
+        env:
+          RENOVATE_CONFIG_FILE: /usr/src/app/renovate.json
+        run: |
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}/renovate.json:/usr/src/app/renovate.json" \
+            -e RENOVATE_CONFIG_FILE=/usr/src/app/renovate.json \
+            ghcr.io/renovatebot/renovate:44.14.10 \
+            renovate-config-validator
+
+      - name: Run Renovate atomicity regression tests
+        run: python3 tests/test_renovate_atomic.py
