@@ -17,6 +17,9 @@ build-depends:
   - freedesktop-sdk.bst:components/llvm.bst
   - freedesktop-sdk.bst:components/gcc.bst
   - freedesktop-sdk.bst:components/pkg-config.bst
+  # tar is needed to unpack the vendored release tarballs below; it is not
+  # present in the base build sandbox on its own.
+  - freedesktop-sdk.bst:components/tar.bst
   # C libraries bootc links against (each provides its pkg-config file).
   - freedesktop-sdk.bst:components/ostree.bst
   - freedesktop-sdk.bst:components/openssl.bst
@@ -33,10 +36,10 @@ variables:
 sources:
   - kind: remote
     url: https://github.com/bootc-dev/bootc/releases/download/v1.16.7/bootc-1.16.7.tar.zstd
-    ref: sha256:ba9d6938e0ca2652cad0735618c2d7bef9eeba609a918ac3d881e6f07bacd089
+    ref: ba9d6938e0ca2652cad0735618c2d7bef9eeba609a918ac3d881e6f07bacd089
   - kind: remote
     url: https://github.com/bootc-dev/bootc/releases/download/v1.16.7/bootc-1.16.7-vendor.tar.zstd
-    ref: sha256:9023c08dfd23b79de88c484cdacdb0bcf5a9c0b492449fe589c7614e76cec039
+    ref: 9023c08dfd23b79de88c484cdacdb0bcf5a9c0b492449fe589c7614e76cec039
 
 config:
   build-commands:
