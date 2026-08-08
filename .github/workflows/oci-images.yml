@@ -20,6 +20,16 @@ on:
         description: Git ref to check out (supports repository_dispatch client_payload.ref).
         required: true
         type: string
+      latest:
+        description: Push :latest tag
+        required: false
+        default: true
+        type: boolean
+      stable:
+        description: Push :stable tag (manual only)
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   # Serialize only conflicting publication for this ref/image; other targets
@@ -90,16 +100,16 @@ jobs:
         # never publish branch content to production tags.
         if: github.event_name != 'repository_dispatch'
         run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
-      - name: Build and verify image
-        run: |
-          BUILD_IMAGE_NAME=${{ inputs.image }} just build
-          BUILD_IMAGE_NAME=${{ inputs.image }} just verify
+      - name: Build image
+        run: BUILD_IMAGE_NAME=${{ inputs.image }} just build
+      - name: Verify image
+        run: BUILD_IMAGE_NAME=${{ inputs.image }} just verify
       - name: Vulnerability scan (grype)
         # Gate: fails on high/critical findings that have a fix available.
         run: just scan "${{ inputs.image }}"
       - name: Publish architecture image
         if: github.event_name != 'repository_dispatch'
-        run: BUILD_IMAGE_NAME=${{ inputs.image }} just tag-push "${BUILD_IMAGE_REGISTRY}/${{ inputs.image }}-${{ matrix.arch }}"
+        run: BUILD_IMAGE_NAME=${{ inputs.image }} PUSH_LATEST=${{ inputs.latest }} PUSH_STABLE=${{ inputs.stable }} just tag-push "${BUILD_IMAGE_REGISTRY}/${{ inputs.image }}-${{ matrix.arch }}"
 
   manifest:
     outputs:
@@ -108,7 +118,7 @@ jobs:
     needs: [build, resolve]
     # repository_dispatch is verification-only for an unmerged FSDK bump;
     # never publish branch content to production tags.
-    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && !cancelled()
+    if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && !cancelled()
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -190,6 +200,23 @@ jobs:
             podman manifest push --all "${REPO}:${t}" "docker://${REPO}:${t}"
             echo "==> published ${REPO}:${t} (${AVAIL_ARCHS[*]})"
           done < <(just tags)
+
+          # Step 1b: Push mutable rolling aliases if requested.
+          EXTRA_TAGS=()
+          if [ "${{ inputs.latest }}" = "true" ]; then
+              EXTRA_TAGS+=("latest")
+          fi
+          if [ "${{ inputs.stable }}" = "true" ]; then
+              EXTRA_TAGS+=("stable")
+          fi
+          for t in "${EXTRA_TAGS[@]}"; do
+              podman manifest create "${REPO}:${t}"
+              for arch in "${AVAIL_ARCHS[@]}"; do
+                  podman manifest add "${REPO}:${t}" "docker://${REPO}-${arch}:${t}"
+              done
+              podman manifest push --all "${REPO}:${t}" "docker://${REPO}:${t}"
+              echo "==> published rolling alias ${REPO}:${t} (${AVAIL_ARCHS[*]})"
+          done
 
           if [[ -z "${FIRST_TAG}" ]]; then
             echo "==> No tags were published for ${IMAGE}; skipping signing and attestation."
