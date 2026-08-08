@@ -103,7 +103,7 @@ class DockerImageSource(Source):
     def track(self, *, previous_sources_dir=None):
         digest, manifest = self._load_manifest(self.tag)
         self.ref = digest
-        self._ensure_mirror(manifest, "Tracking {}".format(self.original_url))
+        self._ensure_mirror(manifest)
         return digest
 
     def fetch(self, *, previous_sources_dir=None):
@@ -112,7 +112,7 @@ class DockerImageSource(Source):
         if self.is_cached():
             return
         _, manifest = self._load_manifest(self.ref)
-        self._ensure_mirror(manifest, "Fetching {}".format(self.original_url))
+        self._ensure_mirror(manifest)
 
     def stage(self, directory):
         if self.ref is None:
@@ -207,7 +207,16 @@ class DockerImageSource(Source):
 
         return digest, manifest
 
-    def _ensure_mirror(self, manifest, activity_name):
+    def _ensure_mirror(self, manifest):
+        # Called directly rather than through self.blocking_activity(): that
+        # runs the given callable in a separate forkserver subprocess, and
+        # pickles it by module path + name. This plugin is loaded dynamically
+        # by pluginbase under a runtime-generated internal module name that
+        # only exists in this process's module cache, so a fresh forkserver
+        # worker can never import it back and dies with ModuleNotFoundError
+        # before attempting the fetch. _download_blob is already synchronous
+        # (plain urllib), so there's no concurrency to lose by calling it
+        # in-process.
         for layer in manifest.get("layers", []):
             blob_file = self._blob_file(layer["digest"])
             if os.path.isfile(blob_file):
@@ -215,16 +224,11 @@ class DockerImageSource(Source):
 
             with self.tempdir() as tempdir:
                 local_file = os.path.join(tempdir, "layer.tar.gz")
-                local_file, error = self.blocking_activity(
-                    _download_blob,
-                    (
-                        self._blob_url(layer["digest"]),
-                        self._registry_token(),
-                        local_file,
-                        layer["digest"][len("sha256:"):],
-                    ),
-                    activity_name,
-                    detail="{} ({})".format(layer["digest"], layer.get("size", "?")),
+                local_file, error = _download_blob(
+                    self._blob_url(layer["digest"]),
+                    self._registry_token(),
+                    local_file,
+                    layer["digest"][len("sha256:"):],
                 )
                 if error:
                     raise SourceError(
