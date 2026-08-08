@@ -13,8 +13,21 @@ arch-slim-commands: |
   # Non-English gettext translations.
   find "$L"/usr/share/locale -mindepth 1 -maxdepth 1 ! -name 'en*' -exec rm -rf {} + 2>/dev/null || true
 
-  # Static libraries are build-time only.
-  find "$L"/usr/lib -type f -name '*.a' -delete 2>/dev/null || true
+  # Static libraries are build-time only. Match symlinks too (e.g. ncurses
+  # ships libtinfo.a -> libncursesw.a) -- -type f alone leaves the
+  # .a-suffixed symlink behind once its target archive is deleted.
+  # Not swallowing find's exit status here on purpose: a previous version
+  # of this line silently deleted nothing in CI and nobody could tell why.
+  echo "==> static libs before: $(find "$L"/usr/lib \( -type f -o -type l \) -name '*.a' | wc -l)"
+  find "$L"/usr/lib \( -type f -o -type l \) -name '*.a' -delete
+  echo "==> static libs after: $(find "$L"/usr/lib \( -type f -o -type l \) -name '*.a' | wc -l)"
+
+  # pacman's downloaded package cache and sync-repo databases: both fully
+  # disposable (re-fetched by `pacman -Sy`/`pacman -S`) and by far the
+  # largest single source of bloat on a fresh archlinux:base rootfs. The
+  # local install database (/var/lib/pacman/local) is kept -- that's what
+  # `pacman -Q` reads to know what's installed.
+  rm -rf "$L"/var/cache/pacman/pkg/* "$L"/var/lib/pacman/sync/*
 
   # Directories left empty by the above.
   find "$L" -depth -type d -empty -delete 2>/dev/null || true
