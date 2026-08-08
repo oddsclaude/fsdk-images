@@ -1,0 +1,20 @@
+# Shared runtime cleanup for the arch OCI image.
+# Included under an element's variables: mapping with (@).
+# Arch has no FSDK split-rule domains, so the slimming is done with explicit
+# path removals here. pacman/pacman-key and a working shell are deliberately
+# KEPT -- this is a usable Arch base, not a distroless image.
+arch-slim-commands: |
+  set -eu
+  L=/layer
+
+  # Documentation bloat: man/info/doc pages.
+  rm -rf "$L"/usr/share/man "$L"/usr/share/info "$L"/usr/share/doc
+
+  # Non-English gettext translations.
+  find "$L"/usr/share/locale -mindepth 1 -maxdepth 1 ! -name 'en*' -exec rm -rf {} + 2>/dev/null || true
+
+  # Static libraries are build-time only.
+  find "$L"/usr/lib -type f -name '*.a' -delete 2>/dev/null || true
+
+  # Directories left empty by the above.
+  find "$L" -depth -type d -empty -delete 2>/dev/null || true

@@ -5,7 +5,7 @@ default:
 
 # -- Configuration ---------------------------------------------------------
 export image_name := env("BUILD_IMAGE_NAME", "base")
-export image_registry := env("BUILD_IMAGE_REGISTRY", "ghcr.io/oci-shipyard")
+export image_registry := env("BUILD_IMAGE_REGISTRY", "ghcr.io/huntedraven7")
 # The tag the local build/verify/push recipes hand between each other. It is
 # never published: keeping it distinct from any registry tag means a local
 # working image can never be mistaken for, or accidentally pushed as, a
@@ -183,7 +183,9 @@ export:
     case "{{image_name}}" in
         base)       DESC="Minimal, high-integrity distroless base image built on freedesktop-sdk" ;;
         static)     DESC="Static-tier runner for compiled Go/Rust binaries built on freedesktop-sdk" ;;
-        *)          DESC="OCI-Shipyard distroless container image" ;;
+        arch)       DESC="Minimal Arch Linux rootfs with pacman, carved from the official archlinux base image" ;;
+        bootc)      DESC="Distroless bootc (bootable-container) runtime built on freedesktop-sdk" ;;
+        *)          DESC="Distroless container image built with fsdk-images" ;;
     esac
 
     LABEL_ARGS=()
@@ -194,8 +196,8 @@ export:
     LABEL_ARGS+=(--label "org.opencontainers.image.description=${DESC}")
     LABEL_ARGS+=(--label "org.opencontainers.image.source=https://github.com/HuntedRaven7/fsdk-images")
     LABEL_ARGS+=(--label "org.opencontainers.image.licenses=Apache-2.0")
-    LABEL_ARGS+=(--label "io.oci-shipyard.fsdk.version={{fsdk_version}}")
-    LABEL_ARGS+=(--label "io.oci-shipyard.fsdk.ref={{fsdk_ref}}")
+    LABEL_ARGS+=(--label "io.huntedraven7.fsdk.version={{fsdk_version}}")
+    LABEL_ARGS+=(--label "io.huntedraven7.fsdk.ref={{fsdk_ref}}")
 
     # Squash to a single layer and apply dynamic labels.
     printf 'FROM %s\n' "$IMAGE_ID" \
@@ -205,7 +207,7 @@ export:
 # Push the locally built image under all derived tags to a given repo ref.
 # The FSDK point-release tag (e.g. :25.08.15) is treated as immutable: if it
 # already exists at the destination it is skipped, never overwritten.
-# Usage: just tag-push ghcr.io/oci-shipyard/base
+# Usage: just tag-push ghcr.io/huntedraven7/base
 [group('build')]
 tag-push REPO:
     #!/usr/bin/env bash
@@ -236,6 +238,8 @@ verify:
     case "$IMG" in
         base)       MAX_BYTES=$((64 * 1024 * 1024)) ;;
         static)     MAX_BYTES=$((80 * 1024 * 1024)) ;;
+        arch)       MAX_BYTES=$((200 * 1024 * 1024)) ;;
+        bootc)      MAX_BYTES=$((256 * 1024 * 1024)) ;;
         *)          echo "FAIL: no size threshold configured for $IMG" >&2; exit 1 ;;
     esac
     SIZE_BYTES=$({{sudo_cmd}} podman image inspect --format '{{"{{.Size}}"}}' "$REF")
@@ -251,35 +255,97 @@ verify:
     {{sudo_cmd}} podman export verify-base | tar -tf - > "$LISTING"
 
     TOTAL=5
-    echo "==> [1/${TOTAL}] distroless: no shell present"
-    if grep -qE '(^|/)(ba)?sh$' "$LISTING"; then
-        echo "FAIL: a shell binary is present in the rootfs"; exit 1
-    fi
-    echo "OK: no shell"
+    if [ "$IMG" = "arch" ]; then
+        echo "==> [1/${TOTAL}] arch: pacman present"
+        if ! grep -qE '^usr/bin/pacman$' "$LISTING"; then
+            echo "FAIL: pacman binary missing from the rootfs"; exit 1
+        fi
+        echo "OK: pacman present"
 
-    echo "==> [2/${TOTAL}] CA certificate bundle present"
-    if ! grep -qE '^etc/(pki/tls/certs/ca-bundle\.crt|ssl/certs/ca-certificates\.crt)$' "$LISTING"; then
-        echo "FAIL: no CA bundle file found"; exit 1
-    fi
-    echo "OK: CA bundle present"
+        echo "==> [2/${TOTAL}] CA certificate bundle present"
+        if ! grep -qE '^etc/(pki/tls/certs/ca-bundle\.crt|ssl/certs/ca-certificates\.crt)$' "$LISTING"; then
+            echo "FAIL: no CA bundle file found"; exit 1
+        fi
+        echo "OK: CA bundle present"
 
-    echo "==> [3/${TOTAL}] tzdata present"
-    if ! grep -qE '^usr/share/zoneinfo/UTC$' "$LISTING"; then
-        echo "FAIL: tzdata (zoneinfo/UTC) missing"; exit 1
-    fi
-    echo "OK: tzdata present"
+        echo "==> [3/${TOTAL}] tzdata present"
+        if ! grep -qE '^usr/share/zoneinfo/UTC$' "$LISTING"; then
+            echo "FAIL: tzdata (zoneinfo/UTC) missing"; exit 1
+        fi
+        echo "OK: tzdata present"
 
-    echo "==> [4/${TOTAL}] slim: bloat must NOT be present (terminfo, sanitizers, fortran)"
-    if grep -qE 'usr/share/terminfo/|/lib(asan|tsan|lsan|ubsan|hwasan|gfortran)\.so' "$LISTING"; then
-        echo "FAIL: slim bloat present -- slim recipe regressed"; exit 1
-    fi
-    echo "OK: slim bloat removed"
+        echo "==> [4/${TOTAL}] slim: man/info/doc pages must NOT be present"
+        if grep -qE '^usr/share/(man|info)/|^usr/share/doc/' "$LISTING"; then
+            echo "FAIL: documentation bloat present -- slim recipe regressed"; exit 1
+        fi
+        echo "OK: documentation removed"
 
-    echo "==> [5/${TOTAL}] slim: locale/build-tool bloat must NOT be present"
-    if grep -qE 'usr/lib(/[^/]*)?/locale/locale-archive$|usr/share/i18n/charmaps/|/(localedef|sln|iconvconfig|ldconfig|pcre2test|pcre2grep)$|libpcre2-(16|32|posix)\.so' "$LISTING"; then
-        echo "FAIL: locale/build-tool bloat present -- slim recipe regressed"; exit 1
+        echo "==> [5/${TOTAL}] slim: static libraries must NOT be present"
+        if grep -qE '\.a$' "$LISTING"; then
+            echo "FAIL: static libraries present -- slim recipe regressed"; exit 1
+        fi
+        echo "OK: static libraries removed"
+    elif [ "$IMG" = "bootc" ]; then
+        echo "==> [1/${TOTAL}] bootc: no shell present"
+        if grep -qE '(^|/)(ba)?sh$' "$LISTING"; then
+            echo "FAIL: a shell binary is present in the rootfs"; exit 1
+        fi
+        echo "OK: no shell"
+
+        echo "==> [2/${TOTAL}] CA certificate bundle present"
+        if ! grep -qE '^etc/(pki/tls/certs/ca-bundle\.crt|ssl/certs/ca-certificates\.crt)$' "$LISTING"; then
+            echo "FAIL: no CA bundle file found"; exit 1
+        fi
+        echo "OK: CA bundle present"
+
+        echo "==> [3/${TOTAL}] tzdata present"
+        if ! grep -qE '^usr/share/zoneinfo/UTC$' "$LISTING"; then
+            echo "FAIL: tzdata (zoneinfo/UTC) missing"; exit 1
+        fi
+        echo "OK: tzdata present"
+
+        echo "==> [4/${TOTAL}] bootc: systemd binary present"
+        if ! grep -qE '^usr/bin/systemd$' "$LISTING"; then
+            echo "FAIL: systemd binary missing -- bootc runtime incomplete"; exit 1
+        fi
+        echo "OK: systemd present"
+
+        echo "==> [5/${TOTAL}] bootc: bootc binary present"
+        if ! grep -qE '^usr/bin/bootc$' "$LISTING"; then
+            echo "FAIL: bootc binary missing -- build did not install bootc"; exit 1
+        fi
+        echo "OK: bootc present"
+    else
+        echo "==> [1/${TOTAL}] distroless: no shell present"
+        if grep -qE '(^|/)(ba)?sh$' "$LISTING"; then
+            echo "FAIL: a shell binary is present in the rootfs"; exit 1
+        fi
+        echo "OK: no shell"
+
+        echo "==> [2/${TOTAL}] CA certificate bundle present"
+        if ! grep -qE '^etc/(pki/tls/certs/ca-bundle\.crt|ssl/certs/ca-certificates\.crt)$' "$LISTING"; then
+            echo "FAIL: no CA bundle file found"; exit 1
+        fi
+        echo "OK: CA bundle present"
+
+        echo "==> [3/${TOTAL}] tzdata present"
+        if ! grep -qE '^usr/share/zoneinfo/UTC$' "$LISTING"; then
+            echo "FAIL: tzdata (zoneinfo/UTC) missing"; exit 1
+        fi
+        echo "OK: tzdata present"
+
+        echo "==> [4/${TOTAL}] slim: bloat must NOT be present (terminfo, sanitizers, fortran)"
+        if grep -qE 'usr/share/terminfo/|/lib(asan|tsan|lsan|ubsan|hwasan|gfortran)\.so' "$LISTING"; then
+            echo "FAIL: slim bloat present -- slim recipe regressed"; exit 1
+        fi
+        echo "OK: slim bloat removed"
+
+        echo "==> [5/${TOTAL}] slim: locale/build-tool bloat must NOT be present"
+        if grep -qE 'usr/lib(/[^/]*)?/locale/locale-archive$|usr/share/i18n/charmaps/|/(localedef|sln|iconvconfig|ldconfig|pcre2test|pcre2grep)$|libpcre2-(16|32|posix)\.so' "$LISTING"; then
+            echo "FAIL: locale/build-tool bloat present -- slim recipe regressed"; exit 1
+        fi
+        echo "OK: locale/build-tool bloat removed"
     fi
-    echo "OK: locale/build-tool bloat removed"
 
     echo "==> verify passed (${IMG})"
 
@@ -287,7 +353,7 @@ verify:
 # SOURCE is optional; it defaults to the locally built image, which is saved
 # from podman to an OCI archive so syft needs no daemon/socket. Published
 # images can be scanned directly with an explicit transport, e.g.
-#   just sbom base registry:ghcr.io/oci-shipyard/base:25.08.15
+#   just sbom base registry:ghcr.io/huntedraven7/base:25.08.15
 # Requires `syft` (>= 1.x) on PATH; CI installs it via taiki-e/install-action.
 [group('test')]
 sbom variant="base" source="":
@@ -317,7 +383,7 @@ sbom variant="base" source="":
     echo "==> Generating SBOMs for ${NAME} from ${SOURCE} (syft)"
     syft scan "${SOURCE}" \
         --source-name "{{image_registry}}/${NAME}" \
-        --source-supplier "OCI-Shipyard" \
+        --source-supplier "HuntedRaven7" \
         --source-version "{{fsdk_version}}" \
         --output spdx-json="${NAME}.spdx.json" \
         --output cyclonedx-json="${NAME}.cyclonedx.json"

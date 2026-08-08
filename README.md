@@ -9,6 +9,8 @@ for Edward's own Package-Image set.
 | ----- | ---- | ----------- |
 | `ghcr.io/HuntedRaven7/base` | TBD | Distroless base: glibc, coreutils, CA certificates, timezone data. No shell, no package manager. Multi-arch: linux/amd64, linux/arm64. [¹](#base-contract) |
 | `ghcr.io/HuntedRaven7/static` | TBD | Static tier for compiled Go/Rust binaries (`CGO_ENABLED=0`): CA certificates + tzdata only, no libc. Multi-arch: linux/amd64, linux/arm64. |
+| `ghcr.io/HuntedRaven7/arch` | TBD | Minimal Arch Linux rootfs carved from the official `archlinux:base` image, with `pacman`/`pacman-key` intact. Slimmed of docs, translations, and static libs. Multi-arch: linux/amd64, linux/arm64. |
+| `ghcr.io/HuntedRaven7/bootc` | TBD | Distroless bootc (bootable container) runtime: systemd PID 1, bootc binary, ostree storage, libsystemd, composefs. No shell. Multi-arch: linux/amd64, linux/arm64. |
 
 ## Adding an image
 

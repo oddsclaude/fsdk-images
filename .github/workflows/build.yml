@@ -72,6 +72,7 @@ jobs:
     outputs:
       oci_images: ${{ steps.resolve.outputs.oci_images }}
       any_oci: ${{ steps.resolve.outputs.any_oci }}
+      targets: ${{ steps.resolve.outputs.targets }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -93,6 +94,12 @@ jobs:
           {
             echo "oci_images=${OCI}"
             echo "any_oci=$(jq -r '.oci_images | length > 0' <<<"${TARGETS}")"
+            echo "targets=$(jq -nc --argjson imgs "${OCI}" '
+              [ $imgs[] as $img
+                | (.archs[$img] // ["x86_64", "aarch64"])[] as $arch
+                | { image: $img, arch: $arch,
+                    runner: (if $arch == "x86_64" then "ubuntu-24.04" else "ubuntu-24.04-arm" end) } ]'
+              elements/targets.json)"
           } >> "$GITHUB_OUTPUT"
           {
             echo "### Pull-request build gate"
@@ -108,14 +115,10 @@ jobs:
     if: github.event_name == 'pull_request' && needs.changed-targets.outputs.any_oci == 'true'
     strategy:
       fail-fast: false
+      # Per-image {image, arch, runner} combos, generated from the canonical
+      # 'archs' map in elements/targets.json by the changed-targets job.
       matrix:
-        image: ${{ fromJson(needs.changed-targets.outputs.oci_images) }}
-        arch: [x86_64, aarch64]
-        include:
-          - arch: x86_64
-            runner: ubuntu-24.04
-          - arch: aarch64
-            runner: ubuntu-24.04-arm
+        include: ${{ fromJson(needs.changed-targets.outputs.targets) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     permissions:
@@ -152,7 +155,7 @@ jobs:
     permissions:
       contents: read
     outputs:
-      oci_images: ${{ steps.set.outputs.oci_images }}
+      oci_targets: ${{ steps.set.outputs.oci_targets }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -173,7 +176,10 @@ jobs:
           else
             OCI_IMAGES="$(jq -c '.oci_images' elements/targets.json)"
           fi
-          echo "oci_images=${OCI_IMAGES}" >> "$GITHUB_OUTPUT"
+          echo "oci_targets=$(jq -nc --argjson imgs "${OCI_IMAGES}" '
+            [ $imgs[] as $img
+              | { image: $img, archs: (.archs[$img] // ["x86_64", "aarch64"]) } ]'
+            elements/targets.json)" >> "$GITHUB_OUTPUT"
 
   oci-images:
     needs: matrix
@@ -181,7 +187,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: ${{ fromJson(needs.matrix.outputs.oci_images) }}
+        include: ${{ fromJson(needs.matrix.outputs.oci_targets) }}
     uses: ./.github/workflows/oci-images.yml
     permissions:
       contents: read
@@ -190,5 +196,6 @@ jobs:
       id-token: write
     with:
       image: ${{ matrix.image }}
+      archs: ${{ matrix.archs }}
       ref: ${{ github.event.client_payload.ref || github.ref }}
     secrets: inherit

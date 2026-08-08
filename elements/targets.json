@@ -2,13 +2,25 @@
   "$comment": "Canonical manifest of OCI distroless image targets published to GHCR. This is the SINGLE source of truth for the GitHub Actions build/manifest matrices, `just validate`, `just sbom`, and the pull-request build gate (`just changed-targets`). Adding a package requires exactly one entry in `oci_images` plus the BST element at elements/oci/<name>.bst and its path ownership in `image_paths` -- no edits to any matrix loop or case list.",
   "oci_images": [
     "base",
-    "static"
+    "static",
+    "arch",
+    "bootc"
   ],
 
   "$comment_image_paths": "Path prefixes each OCI image owns. `just changed-targets` matches changed files against these to decide which images a pull request must actually build and verify, so a one-image change costs one build instead of many. A prefix ending in '/' matches everything under that directory; anything else matches that exact path.",
   "image_paths": {
     "base": ["elements/oci/base.bst", "elements/base/"],
-    "static": ["elements/oci/static.bst", "elements/static/"]
+    "static": ["elements/oci/static.bst", "elements/static/"],
+    "arch": ["elements/oci/arch.bst", "elements/arch/", "plugins/sources/docker_image.py"],
+    "bootc": ["elements/oci/bootc.bst", "elements/bootc/"]
+  },
+
+  "$comment_archs": "Host architectures each image is built and published for (the per-architecture matrix in the workflows). The official archlinux:base image is amd64-only, so 'arch' is not built on the aarch64 leg.",
+  "archs": {
+    "base": ["x86_64", "aarch64"],
+    "static": ["x86_64", "aarch64"],
+    "arch": ["x86_64"],
+    "bootc": ["x86_64", "aarch64"]
   },
 
   "$comment_shared_paths": "Changes here can affect every target (the FSDK junction, the shared slim recipe, project-wide options, the build tooling itself), so these select the canary image below: a real end-to-end build and `just verify` of the image every other image is carved from.",

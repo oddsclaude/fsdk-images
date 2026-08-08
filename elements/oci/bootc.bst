@@ -2,8 +2,8 @@ kind: script
 
 build-depends:
   - freedesktop-sdk.bst:components/oci-builder.bst
-  - static/static-init-script.bst
-  - filename: static/static-runtime.bst
+  - bootc/bootc-init-script.bst
+  - filename: bootc/bootc-runtime.bst
     config:
       location: /layer
 
@@ -33,15 +33,16 @@ config:
       - os: linux
         architecture: "%{go-arch}"
         layer: /layer
-        comment: "fsdk-images static image"
+        comment: "fsdk-images bootc image"
         config:
+          Cmd: ["/usr/bin/systemd"]
           Labels:
-            'org.opencontainers.image.title': 'static'
-            'org.opencontainers.image.description': 'Distroless static image carved from freedesktop-sdk — no glibc, for statically compiled binaries'
+            'org.opencontainers.image.title': 'bootc'
+            'org.opencontainers.image.description': 'Distroless bootc (bootable-container) runtime built on freedesktop-sdk'
             'org.opencontainers.image.vendor': 'HuntedRaven7'
             'org.opencontainers.image.licenses': 'Apache-2.0'
             'org.opencontainers.image.url': 'https://github.com/HuntedRaven7/fsdk-images'
             'org.opencontainers.image.source': 'https://github.com/HuntedRaven7/fsdk-images'
         index-annotations:
-          'org.opencontainers.image.ref.name': 'ghcr.io/huntedraven7/static:%{fsdk-version}'
+          'org.opencontainers.image.ref.name': 'ghcr.io/huntedraven7/bootc:%{fsdk-version}'
       EOF

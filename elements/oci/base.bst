@@ -55,10 +55,10 @@ config:
           Labels:
             'org.opencontainers.image.title': 'base'
             'org.opencontainers.image.description': 'Distroless base image carved from freedesktop-sdk'
-            'org.opencontainers.image.vendor': 'OCI-Shipyard'
+            'org.opencontainers.image.vendor': 'HuntedRaven7'
             'org.opencontainers.image.licenses': 'Apache-2.0'
-            'org.opencontainers.image.url': 'https://github.com/OCI-Shipyard/fsdk-images'
-            'org.opencontainers.image.source': 'https://github.com/OCI-Shipyard/fsdk-images'
+            'org.opencontainers.image.url': 'https://github.com/HuntedRaven7/fsdk-images'
+            'org.opencontainers.image.source': 'https://github.com/HuntedRaven7/fsdk-images'
         index-annotations:
-          'org.opencontainers.image.ref.name': 'ghcr.io/oci-shipyard/base:%{fsdk-version}'
+          'org.opencontainers.image.ref.name': 'ghcr.io/huntedraven7/base:%{fsdk-version}'
       EOF

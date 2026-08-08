@@ -12,6 +12,10 @@ on:
         description: OCI image name, validated against elements/targets.json by build.yml
         required: true
         type: string
+      archs:
+        description: JSON array of host architectures to build/publish for this image, from the 'archs' map in elements/targets.json
+        required: true
+        type: string
       ref:
         description: Git ref to check out (supports repository_dispatch client_payload.ref).
         required: true
@@ -24,16 +28,42 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  resolve:
+    # Map the per-image arch list from targets.json onto the runner and
+    # platform matrix entries, so no arch/runner list is hand-maintained in
+    # this workflow.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      build_matrix: ${{ steps.set.outputs.build_matrix }}
+      smoke_matrix: ${{ steps.set.outputs.smoke_matrix }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - id: set
+        run: |
+          echo "build_matrix=$(jq -nc --arg img '${{ inputs.image }}' '
+            [ (.archs[$img] // ["x86_64", "aarch64"])[] as $arch
+              | { arch: $arch,
+                  runner: (if $arch == "x86_64" then "ubuntu-24.04" else "ubuntu-24.04-arm" end) } ]'
+            elements/targets.json)" >> "$GITHUB_OUTPUT"
+          echo "smoke_matrix=$(jq -nc --arg img '${{ inputs.image }}' '
+            [ (.archs[$img] // ["x86_64", "aarch64"])[] as $arch
+              | { tag_arch: $arch,
+                  platform_arch: (if $arch == "x86_64" then "amd64" else "arm64" end),
+                  runner: (if $arch == "x86_64" then "ubuntu-24.04" else "ubuntu-24.04-arm" end) } ]'
+            elements/targets.json)" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: resolve
     strategy:
       fail-fast: false
       matrix:
-        arch: [x86_64, aarch64]
-        include:
-          - arch: x86_64
-            runner: ubuntu-24.04
-          - arch: aarch64
-            runner: ubuntu-24.04-arm
+        include: ${{ fromJson(needs.resolve.outputs.build_matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     permissions:
@@ -75,7 +105,7 @@ jobs:
     outputs:
       digest: ${{ steps.resolve-digest.outputs.digest }}
       tag: ${{ steps.resolve-digest.outputs.tag }}
-    needs: build
+    needs: [build, resolve]
     # repository_dispatch is verification-only for an unmerged FSDK bump;
     # never publish branch content to production tags.
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && !cancelled()
@@ -125,15 +155,17 @@ jobs:
 
           # Check which per-architecture images were successfully built and published
           POINT_TAG="$(just tags | tail -1)"
+          ARCHS="$(jq -r --arg img "$IMAGE" '.archs[$img][]' elements/targets.json)"
           AVAIL_ARCHS=()
-          for arch in x86_64 aarch64; do
+          for arch in ${ARCHS}; do
             if skopeo inspect --no-tags --creds "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" "docker://${REPO}-${arch}:${POINT_TAG}" >/dev/null 2>&1; then
               AVAIL_ARCHS+=("${arch}")
             fi
           done
 
-          if [ ${#AVAIL_ARCHS[@]} -ne 2 ]; then
-            echo "ERROR: Expected x86_64 and aarch64 staging images for ${REPO}:${POINT_TAG}; found: ${AVAIL_ARCHS[*]:-none}" >&2
+          EXPECTED_ARCH_COUNT="$(jq --arg img "$IMAGE" '.archs[$img] | length' elements/targets.json)"
+          if [ ${#AVAIL_ARCHS[@]} -ne "${EXPECTED_ARCH_COUNT}" ]; then
+            echo "ERROR: Expected ${EXPECTED_ARCH_COUNT} staging images for ${REPO}:${POINT_TAG} (${ARCHS//$'\n'/ }); found: ${AVAIL_ARCHS[*]:-none}" >&2
             exit 1
           fi
 
@@ -214,18 +246,12 @@ jobs:
           push-to-registry: true
 
   publish-smoke:
-    needs: manifest
+    needs: [manifest, resolve]
     if: needs.manifest.result == 'success' && needs.manifest.outputs.digest != ''
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - tag_arch: x86_64
-            platform_arch: amd64
-            runner: ubuntu-24.04
-          - tag_arch: aarch64
-            platform_arch: arm64
-            runner: ubuntu-24.04-arm
+        include: ${{ fromJson(needs.resolve.outputs.smoke_matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     permissions:
@@ -264,7 +290,8 @@ jobs:
           test "${actual_arch}" = "${PLATFORM_ARCH}"
           # All published images must be runnable with their OCI config.
           case "${{ inputs.image }}" in
-            base|static) podman run --rm --platform "linux/${PLATFORM_ARCH}" "${REPO}@${arch_digest}" /usr/bin/true ;;
+            base|static|arch) podman run --rm --platform "linux/${PLATFORM_ARCH}" "${REPO}@${arch_digest}" /usr/bin/true ;;
+            bootc) podman run --rm --privileged --systemd=true --platform "linux/${PLATFORM_ARCH}" "${REPO}@${arch_digest}" /usr/bin/systemctl --version ;;
             *) echo "ERROR: no publish smoke command configured for ${{ inputs.image }}" >&2; exit 1 ;;
           esac
 
