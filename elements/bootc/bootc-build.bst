@@ -46,6 +46,11 @@ config:
   - |
     tar --zstd -xf bootc-%{bootc-version}.tar.zstd
     tar --zstd -xf bootc-%{bootc-version}-vendor.tar.zstd
+    # The vendor tarball extracts a top-level vendor/ dir as a sibling of
+    # bootc-%{bootc-version}/, but .cargo/vendor-config.toml points cargo at
+    # a "vendor" directory relative to the crate root (where cargo actually
+    # runs, below). Move it in before cd'ing there.
+    mv vendor bootc-%{bootc-version}/vendor
     cd bootc-%{bootc-version}
     # Point cargo at the vendored dependency tree so the build stays offline.
     cat .cargo/vendor-config.toml >> .cargo/config.toml
