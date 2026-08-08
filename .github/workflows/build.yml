@@ -6,6 +6,7 @@ name: Build images
 # never blocks or obscures another's status in the Actions UI.
 
 on:
+  push:
   pull_request:
   # Publish builds run on a cadence (Mon, Wed, Sun 03:00 UTC), not on every
   # push to main. PRs still build as the pull-request gate, and
