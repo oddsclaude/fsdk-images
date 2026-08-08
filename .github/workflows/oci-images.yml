@@ -49,13 +49,13 @@ jobs:
           echo "build_matrix=$(jq -nc --arg img '${{ inputs.image }}' '
             [ (.archs[$img] // ["x86_64", "aarch64"])[] as $arch
               | { arch: $arch,
-                  runner: (if $arch == "x86_64" then "ubuntu-24.04" else "ubuntu-24.04-arm" end) } ]'
+                  runner: (if $arch == "x86_64" then "ubuntu-24.04" else "ubuntu-24.04-arm" end) } ]' \
             elements/targets.json)" >> "$GITHUB_OUTPUT"
           echo "smoke_matrix=$(jq -nc --arg img '${{ inputs.image }}' '
             [ (.archs[$img] // ["x86_64", "aarch64"])[] as $arch
               | { tag_arch: $arch,
                   platform_arch: (if $arch == "x86_64" then "amd64" else "arm64" end),
-                  runner: (if $arch == "x86_64" then "ubuntu-24.04" else "ubuntu-24.04-arm" end) } ]'
+                  runner: (if $arch == "x86_64" then "ubuntu-24.04" else "ubuntu-24.04-arm" end) } ]' \
             elements/targets.json)" >> "$GITHUB_OUTPUT"
 
   build:

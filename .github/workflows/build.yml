@@ -180,7 +180,7 @@ jobs:
           fi
           TARGETS="$(jq -nc --argjson imgs "${OCI_IMAGES}" '
             [ $imgs[] as $img
-              | { image: $img, archs: (.archs[$img] // ["x86_64", "aarch64"]) } ]'
+              | { image: $img, archs: (.archs[$img] // ["x86_64", "aarch64"]) } ]' \
             elements/targets.json)"
           echo "oci_targets=${TARGETS}" >> "$GITHUB_OUTPUT"
 
