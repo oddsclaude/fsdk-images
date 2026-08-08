@@ -7,8 +7,8 @@ for Edward's own Package-Image set.
 
 | Image | Size | Description |
 | ----- | ---- | ----------- |
-| `ghcr.io/oci-shipyard/base` | TBD | Distroless base: glibc, coreutils, CA certificates, timezone data. No shell, no package manager. Multi-arch: linux/amd64, linux/arm64. [¹](#base-contract) |
-| `ghcr.io/oci-shipyard/static` | TBD | Static tier for compiled Go/Rust binaries (`CGO_ENABLED=0`): CA certificates + tzdata only, no libc. Multi-arch: linux/amd64, linux/arm64. |
+| `ghcr.io/HuntedRaven7/base` | TBD | Distroless base: glibc, coreutils, CA certificates, timezone data. No shell, no package manager. Multi-arch: linux/amd64, linux/arm64. [¹](#base-contract) |
+| `ghcr.io/HuntedRaven7/static` | TBD | Static tier for compiled Go/Rust binaries (`CGO_ENABLED=0`): CA certificates + tzdata only, no libc. Multi-arch: linux/amd64, linux/arm64. |
 
 ## Adding an image
 

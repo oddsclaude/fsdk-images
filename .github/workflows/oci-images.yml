@@ -49,7 +49,9 @@ jobs:
           persist-credentials: false
       - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2
         with:
-          tool: just, grype
+          tool: just
+      - name: Install grype
+        run: curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
       - name: Compute OCI Metadata
         run: |
           echo "OCI_IMAGE_REVISION=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
