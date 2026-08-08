@@ -16,5 +16,12 @@ arch-slim-commands: |
   # Static libraries are build-time only.
   find "$L"/usr/lib -type f -name '*.a' -delete 2>/dev/null || true
 
+  # pacman's downloaded package cache and sync-repo databases: both fully
+  # disposable (re-fetched by `pacman -Sy`/`pacman -S`) and by far the
+  # largest single source of bloat on a fresh archlinux:base rootfs. The
+  # local install database (/var/lib/pacman/local) is kept -- that's what
+  # `pacman -Q` reads to know what's installed.
+  rm -rf "$L"/var/cache/pacman/pkg/* "$L"/var/lib/pacman/sync/*
+
   # Directories left empty by the above.
   find "$L" -depth -type d -empty -delete 2>/dev/null || true
