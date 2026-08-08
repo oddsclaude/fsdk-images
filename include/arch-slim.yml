@@ -52,6 +52,6 @@ arch-slim-commands: |
 
   # Directories left empty by the above (best-effort, non-recursive is fine
   # here: rmdir only removes what's actually empty, nesting doesn't matter).
-  for d in "$L"/usr/share/locale/* "$L"/usr/share/locale" "$L"/var/cache/pacman/pkg "$L"/var/lib/pacman/sync; do
+  for d in "$L"/usr/share/locale "$L"/var/cache/pacman/pkg "$L"/var/lib/pacman/sync; do
     [ -d "$d" ] && rmdir "$d" 2>/dev/null || true
   done
