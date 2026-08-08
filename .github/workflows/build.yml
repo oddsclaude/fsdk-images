@@ -92,15 +92,16 @@ jobs:
           TARGETS="$(just changed-targets "${BASE_SHA}" HEAD)"
           echo "==> affected targets: ${TARGETS}"
           OCI="$(jq -c '.oci_images' <<<"${TARGETS}")"
+          MATRIX="$(jq -nc --argjson imgs "${OCI}" '
+            [ $imgs[] as $img
+              | (.archs[$img] // ["x86_64", "aarch64"])[] as $arch
+              | { image: $img, arch: $arch,
+                  runner: (if $arch == "x86_64" then "ubuntu-24.04" else "ubuntu-24.04-arm" end) } ]'
+            elements/targets.json)"
           {
             echo "oci_images=${OCI}"
             echo "any_oci=$(jq -r '.oci_images | length > 0' <<<"${TARGETS}")"
-            echo "targets=$(jq -nc --argjson imgs "${OCI}" '
-              [ $imgs[] as $img
-                | (.archs[$img] // ["x86_64", "aarch64"])[] as $arch
-                | { image: $img, arch: $arch,
-                    runner: (if $arch == "x86_64" then "ubuntu-24.04" else "ubuntu-24.04-arm" end) } ]'
-              elements/targets.json)"
+            echo "targets=${MATRIX}"
           } >> "$GITHUB_OUTPUT"
           {
             echo "### Pull-request build gate"
@@ -177,10 +178,11 @@ jobs:
           else
             OCI_IMAGES="$(jq -c '.oci_images' elements/targets.json)"
           fi
-          echo "oci_targets=$(jq -nc --argjson imgs "${OCI_IMAGES}" '
+          TARGETS="$(jq -nc --argjson imgs "${OCI_IMAGES}" '
             [ $imgs[] as $img
               | { image: $img, archs: (.archs[$img] // ["x86_64", "aarch64"]) } ]'
-            elements/targets.json)" >> "$GITHUB_OUTPUT"
+            elements/targets.json)"
+          echo "oci_targets=${TARGETS}" >> "$GITHUB_OUTPUT"
 
   oci-images:
     needs: matrix
