@@ -3,6 +3,12 @@
 # Arch has no FSDK split-rule domains, so the slimming is done with explicit
 # path removals here. pacman/pacman-key and a working shell are deliberately
 # KEPT -- this is a usable Arch base, not a distroless image.
+#
+# Written without `find`: oci/arch.bst's build sandbox (oci-builder.bst +
+# the imported arch rootfs, nothing else) doesn't have GNU findutils on
+# PATH, only basic tools like rm. Every previous `find`-based version of
+# this recipe was a silent no-op (`2>/dev/null || true` ate the
+# "command not found" every time).
 arch-slim-commands: |
   set -eu
   L=/layer
@@ -10,11 +16,42 @@ arch-slim-commands: |
   # Documentation bloat: man/info/doc pages.
   rm -rf "$L"/usr/share/man "$L"/usr/share/info "$L"/usr/share/doc
 
-  # Non-English gettext translations.
-  find "$L"/usr/share/locale -mindepth 1 -maxdepth 1 ! -name 'en*' -exec rm -rf {} + 2>/dev/null || true
+  # Non-English gettext translations: keep en*, drop every other locale dir.
+  if [ -d "$L"/usr/share/locale ]; then
+    for d in "$L"/usr/share/locale/*; do
+      [ -e "$d" ] || continue
+      case "$(basename "$d")" in
+        en*) ;;
+        *) rm -rf "$d" ;;
+      esac
+    done
+  fi
 
-  # Static libraries are build-time only.
-  find "$L"/usr/lib -type f -name '*.a' -delete 2>/dev/null || true
+  # Static libraries are build-time only. Recursive since some packages
+  # (e.g. ncurses) nest them a directory or two deep (gprofng/*.a etc).
+  strip_static_libs() {
+    for entry in "$1"/*; do
+      [ -e "$entry" ] || [ -L "$entry" ] || continue
+      if [ -d "$entry" ] && [ ! -L "$entry" ]; then
+        strip_static_libs "$entry"
+      else
+        case "$entry" in
+          *.a) rm -f "$entry" ;;
+        esac
+      fi
+    done
+  }
+  [ -d "$L"/usr/lib ] && strip_static_libs "$L"/usr/lib
 
-  # Directories left empty by the above.
-  find "$L" -depth -type d -empty -delete 2>/dev/null || true
+  # pacman's downloaded package cache and sync-repo databases: both fully
+  # disposable (re-fetched by `pacman -Sy`/`pacman -S`) and by far the
+  # largest single source of bloat on a fresh archlinux:base rootfs. The
+  # local install database (/var/lib/pacman/local) is kept -- that's what
+  # `pacman -Q` reads to know what's installed.
+  rm -rf "$L"/var/cache/pacman/pkg/* "$L"/var/lib/pacman/sync/*
+
+  # Directories left empty by the above (best-effort, non-recursive is fine
+  # here: rmdir only removes what's actually empty, nesting doesn't matter).
+  for d in "$L"/usr/share/locale/* "$L"/usr/share/locale" "$L"/var/cache/pacman/pkg "$L"/var/lib/pacman/sync; do
+    [ -d "$d" ] && rmdir "$d" 2>/dev/null || true
+  done
